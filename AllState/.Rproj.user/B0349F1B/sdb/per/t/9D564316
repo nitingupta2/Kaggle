@@ -1,0 +1,21 @@
+{
+    "collab_server" : "",
+    "contents" : "# # Install xgboost 0.6 from github\n# xgb_version <- packageVersion(\"xgboost\")\n# if(xgb_version<\"0.6.0\") source(\"install_xgboost.R\")\n\nlibrary(caret)\nlibrary(ggplot2)\nlibrary(data.table)\nlibrary(dplyr)\nlibrary(Matrix)\nlibrary(Metrics)\nlibrary(xgboost)\nlibrary(parallel)\n\nID = 'id'\nTARGET = 'loss'\nSEED = 0\nSHIFT = 200\nTRAIN_FILE = \"train_final.csv\"\nTEST_FILE = \"test_final.csv\"\nSUBMISSION_FILE = \"sample_submission.csv\"\n\ntrain = fread(TRAIN_FILE, showProgress = TRUE)\ntest = fread(TEST_FILE, showProgress = TRUE)\ny_train = log(train[,TARGET, with = FALSE] + SHIFT)[[TARGET]]\n\ntrain[, c(ID, TARGET) := NULL]\ntest[, c(ID) := NULL]\nntrain = nrow(train)\n\ntrain_test = rbind(train, test)\nrm(train) ; rm(test)\n\nfeatures = names(train_test)\nfeatures_ordinal <- c(\"cat74\",\"cat78\",\"cat79\",\"cat85\",\"cat87\",\"cat90\",\"cat101\",\"cat102\",\"cat103\",\"cat105\",\"cat111\")\n\n# Convert ordinal categorical features to integers\nfor(f in features_ordinal) {\n    train_test[[f]] <- as.factor(train_test[[f]])\n    vlevels <- levels(train_test[[f]])\n    \n    if(\"Other\" %in% vlevels) {\n        idx <- which(vlevels == \"Other\")\n        vlevels <- c(vlevels[-idx],\"Other\")\n    }\n    train_test[[f]] <- factor(train_test[[f]], levels = vlevels)\n    vlevels <- levels(train_test[[f]])\n    \n    print(paste(\"Ordered levels in\", f, \":\", paste(vlevels, collapse = \",\")))\n    \n    # convert to integers and then lexical encoding\n    train_test[[f]] <- as.integer(train_test[[f]]) - 1\n    train_test[[f]] <- train_test[[f]]/max(train_test[[f]])\n}\n\nfor (f in features) {\n    if (class(train_test[[f]])==\"character\") {\n        levels <- sort(unique(train_test[[f]]))\n        train_test[[f]] <- as.integer(factor(train_test[[f]], levels=levels)) - 1\n        train_test[[f]] <- train_test[[f]]/max(train_test[[f]])\n    }\n}\n\nx_train = train_test[1:ntrain,]\nx_test = train_test[(ntrain+1):nrow(train_test),]\ndtrain = xgb.DMatrix(as.matrix(x_train), label=y_train)\ndtest = xgb.DMatrix(as.matrix(x_test))\n\nxgb_params = list(\n    colsample_bytree = 0.5,\n    subsample = 0.8,\n    eta = 0.01,\n    objective = 'reg:linear',\n    max_depth = 12,\n    alpha = 1,\n    gamma = 2,\n    min_child_weight = 1,\n    base_score = 7.76\n)\nxg_eval_mae <- function (yhat, dtrain) {\n    y = getinfo(dtrain, \"label\")\n    err= mae(exp(y),exp(yhat) )\n    return (list(metric = \"error\", value = err))\n}\n\nset.seed(SEED)\nres = xgb.cv(xgb_params,\n             dtrain,\n             nrounds=15000,\n             nfold=5,\n             early_stopping_rounds=50,\n             print_every_n = 50,\n             verbose= 2,\n             feval=xg_eval_mae,\n             maximize=FALSE)\n\nbest_nrounds = res$best_iteration # for xgboost v0.6 users \ncv_mean = res$evaluation_log$test_error_mean[best_nrounds]\ncv_std = res$evaluation_log$test_error_std[best_nrounds]\nprint(paste(\"CV-Mean:\",cv_mean))\nprint(paste(\"CV-Stdev:\",cv_std))\nprint(paste(\"Best_nrounds:\",best_nrounds))\n\nset.seed(SEED)\ngbdt = xgb.train(xgb_params, dtrain, nrounds = as.integer(best_nrounds/0.8))\n\nsubmission = fread(SUBMISSION_FILE, colClasses = c(\"integer\", \"numeric\"))\nsubmission$loss = exp(predict(gbdt,dtest)) - SHIFT\nwrite.csv(submission,\"submission_xgboost_3.csv\",row.names = FALSE)\n",
+    "created" : 1480465830420.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "3191252344",
+    "id" : "9D564316",
+    "lastKnownWriteTime" : 1480775279,
+    "last_content_update" : 1480775279114,
+    "path" : "C:/Backups/Kaggle/AllState/model_xgboost3.R",
+    "project_path" : "model_xgboost3.R",
+    "properties" : {
+        "tempName" : "Untitled1"
+    },
+    "relative_order" : 3,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}

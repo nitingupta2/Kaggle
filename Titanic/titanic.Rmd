@@ -1,0 +1,315 @@
+---
+title: Kaggle - Predicting Survivors on Titanic
+author: "Nitin Gupta"
+date: "Thursday, October 09, 2014"
+output: html_document
+---
+
+
+### Reading Data
+```{r dataPrep, echo=FALSE, message=FALSE, warning=FALSE}
+readData <- function(filePath, columnClasses, naStrings) {
+    df <- read.csv(filePath, colClasses=columnClasses, na.strings=naStrings)
+    return(df)
+}
+
+trainColClasses <- c("character","factor","factor","character","factor","numeric",
+                     "integer","integer","character","numeric","character","factor")
+testColClasses <- trainColClasses[-2]
+
+dfRawTrain <- readData("train.csv", trainColClasses, naStrings = c(NA,""))
+summary(dfRawTrain)
+
+dfRawTest <- readData("test.csv", testColClasses, naStrings = c(NA,""))
+summary(dfRawTest)
+```
+
+
+### Exploratory Data Analysis
+```{r eda, echo=FALSE, message=FALSE, warning=FALSE}
+library(Amelia)
+missmap(dfRawTrain, main="Titanic training data - Missing Map", col=c("yellow","black"), legend=F, y.lab=F, y.at=F)
+missmap(dfRawTest, main="Titanic testing data - Missing Map", col=c("yellow","black"), legend=F, y.lab=F, y.at=F)
+
+# Barplots & Histograms
+library(ggplot2)
+# with(dfRawTrain, barplot(table(Survived), names.arg=c("Perished","Survived"), main="Passenger Fate"))
+# with(dfRawTrain, barplot(table(Pclass), names.arg=c("First","Second","Third"), main="Traveling Class"))
+# with(dfRawTrain, barplot(table(Sex), main="Gender"))
+# with(dfRawTrain, barplot(table(Embarked), names.arg=c("Cherbourg","Queenstown","Southampton"), main="Embarked"))
+# with(dfRawTrain, hist(Age, col="red"))
+# with(dfRawTrain, hist(Fare, col="red"))
+# with(dfRawTrain, hist(SibSp+Parch, col="red", main="Histogram of FamilySize", xlab="FamilySize"))
+qplot(Survived, data=dfRawTrain, geom="bar", fill=Survived, main="Passenger Fate", ylab="")
+qplot(Pclass, data=dfRawTrain, geom="bar", fill=Pclass, main="Traveling Class", ylab="")
+qplot(Sex, data=dfRawTrain, geom="bar", fill=Sex, main="Gender", ylab="")
+qplot(Embarked, data=dfRawTrain, geom="bar", fill=Embarked, main="Embarked", xlab="", ylab="")
+qplot(Age, data=dfRawTrain, fill=Sex, position="dodge", main="Passenger Ages by Sex")
+qplot(Fare, data=dfRawTrain, fill=Pclass, binwidth=20, main="Passenger Fare by Class")
+qplot(SibSp+Parch, data=dfRawTrain, fill=Sex, position="dodge", binwidth=1, main="FamilySize by Sex", ylab="")
+
+# Mosaicplots by Survival
+library(vcd)
+with(dfRawTrain, mosaicplot(Pclass ~ Survived, shade=F, color=c("black","blue"), 
+                            xlab="Pclass", ylab="Survived", main="Passenger Fate by Traveling Class"))
+with(dfRawTrain, mosaicplot(Sex ~ Survived, shade=F, color=c("black","blue"), 
+                            xlab="Sex", ylab="Survived", main="Passenger Fate by Gender"))
+with(dfRawTrain, mosaicplot(Embarked ~ Survived, shade=F, color=c("black","blue"), 
+                            xlab="Embarked", ylab="Survived", main="Passenger Fate by Port"))
+
+# Boxplots by Survival
+# with(dfRawTrain, boxplot(Age ~ Survived, main="Passenger Fate by Age", xlab="Survived", ylab="Age"))
+# with(dfRawTrain, boxplot(Age ~ Pclass, main="Traveling Class by Age", xlab="Pclass", ylab="Age"))
+# with(dfRawTrain, boxplot(Age ~ Sex, main="Gender by Age", xlab="Sex", ylab="Age"))
+qplot(Survived, Age, data=dfRawTrain, fill=Sex, geom="boxplot", main="Passenger Fate by Age/Sex")
+qplot(Pclass, Age, data=dfRawTrain, fill=Survived, geom="boxplot", main="Traveling Class by Age/Fate")
+```
+
+
+### Feature Engineering & Preprocessing
+
+```{r featEngg, echo=FALSE, message=FALSE, warning=FALSE}
+library(stringr)
+library(plyr)
+library(Hmisc)
+
+imputeMedianAge <- function(df=data.frame()) {
+    for(titleLevel in levels(df$Title)) {
+        df$Age[which(df$Title==titleLevel)] <- impute(df$Age[which(df$Title==titleLevel)])
+    }
+    return(df)
+}
+
+imputeMedianFare <- function(df=data.frame()) {
+    df$Fare[which(df$Fare==0)] <- NA
+    for(classLevel in levels(df$Pclass)) {
+        df$Fare[which(df$Pclass==classLevel)] <- impute(df$Fare[which(df$Pclass==classLevel)])
+    }
+    return(df)
+}
+
+getFarePerPerson <- function(df=data.frame()) {
+    df$FarePP <- NA
+    for(ticketnum in unique(df$Ticket)) {
+        ticketGroupCount <- length(df$Fare[which(df$Ticket==ticketnum)])
+        df$FarePP[which(df$Ticket==ticketnum)] <- sum(df$Fare[which(df$Ticket==ticketnum)])/(ticketGroupCount^2)
+    }
+    return(df)
+}
+
+preProcessData <- function(df=data.frame()) {
+    # Fix NAs and zeros: Fare
+    # Impute median values by Pclass
+    df <- imputeMedianFare(df)
+
+    # Determine Fare per person (average ticket price, grouped by Ticket#)
+    df <- getFarePerPerson(df)
+
+    # Add Feature: FareRange
+    cutpoints <- quantile(df$FarePP, seq(0, 1, length=5))
+    df$FareRange <- cut(df$FarePP, cutpoints, include.lowest=T)
+    
+    # Relevel Factor: Survived
+    df$Survived <- revalue(df$Survived, c("0"="Perished", "1"="Survived"))
+    # Relevel Factor: Pclass
+    df$Pclass <- revalue(df$Pclass, c("1"="First", "2"="Second", "3"="Third"))
+    
+    # Add feature: Title
+    vNames <- df$Name
+    vTitles <- sapply(vNames, FUN=function(x) str_trim(strsplit(x, "[,.]")[[1]][2]))
+    vTitles[vTitles %in% c("Mlle","Ms")]="Miss"
+    vTitles[vTitles %in% c("Mme")]="Mrs"
+    vTitles[vTitles %in% c("Capt","Col","Don","Dona","Dr","Jonkheer",
+                           "Lady","Major","Rev","Sir","the Countess")]="Noble"
+    df$Title <- as.factor(vTitles)
+
+    # Fix NAs: Age (impute median values by Title)
+    df <- imputeMedianAge(df)
+    
+    # Add Feature: AgeClass
+    df$AgeClass <- "Adult"
+    df$AgeClass[df$Title=="Master" | df$Age<=14] <- "Child"
+    df$AgeClass <- as.factor(df$AgeClass)
+
+    # Fix NAs: Embarked
+    df$Embarked[is.na(df$Embarked)] <- "S"
+    
+    # Add Feature: FamilySize
+    df$FamilySize <- df$SibSp + df$Parch + 1
+    
+    return(df)
+}
+
+# Merge training and test sets to impute missing values and create features
+dfRawTest$Survived <- NA 
+vPassengerId.test <- dfRawTest$PassengerId
+dfMerged <- rbind(dfRawTrain, dfRawTest)
+# Preprocess merged dataset
+dfMerged <- preProcessData(dfMerged)
+dfMerged <- dfMerged[order(dfMerged$Pclass, dfMerged$Ticket),]
+# Separate back into training and test sets
+dfFinalTest <- dfMerged[dfMerged$PassengerId %in% vPassengerId.test,]
+dfFinalTrain <- dfMerged[!(dfMerged$PassengerId %in% vPassengerId.test),]
+rm(vPassengerId.test)
+
+# Plots of engineered features
+library(Amelia)
+with(dfFinalTrain, mosaicplot(Title ~ Survived , shade=F, color=c("black","blue"), 
+                              xlab="Title", ylab="Survived", main="Passenger Fate by Title"))
+with(dfFinalTrain, mosaicplot(AgeClass ~ Survived , shade=F, color=c("black","blue"), 
+                              xlab="AgeClass", ylab="Survived", main="Passenger Fate by AgeClass"))
+with(dfFinalTrain, mosaicplot(Pclass ~ Survived , shade=F, color=c("black","blue"), 
+                              xlab="Pclass", ylab="Survived", main="Passenger Fate by Traveling Class"))
+with(dfFinalTrain, mosaicplot(FareRange ~ Survived , shade=F, color=c("black","blue"), 
+                              xlab="FareRange", ylab="Survived", main="Passenger Fate by FareRange"))
+
+library(ggplot2)
+qplot(AgeClass, data=dfFinalTrain, fill=Sex, facets=~Survived, geom="bar", position="dodge")
+qplot(Survived, Age, data=dfFinalTrain, fill=Survived, facets=~Sex, geom="boxplot", position="dodge")
+qplot(Survived, FamilySize, data=dfFinalTrain, fill=Survived, geom="boxplot")
+qplot(Survived, FarePP, data=dfFinalTrain, fill=Survived, geom="boxplot")
+```
+
+
+### Model Building
+```{r models, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+vFeatures <- c("Survived", "Pclass", "Sex", "FareRange", "AgeClass", "FamilySize")
+dfClean <- dfFinalTrain[, vFeatures]
+summary(dfClean)
+
+# Check to see any zero covariates
+library(caret)
+nsv <- nearZeroVar(dfClean, saveMetrics=T)
+print(nsv)
+
+set.seed(11)
+inTrain <- createDataPartition(dfClean$Survived, p=0.7, list=FALSE)
+training <- dfClean[inTrain, ]
+validation <- dfClean[-inTrain, ]
+rm(inTrain)
+
+# featurePlot(x=training[,vFeatures[-1]], y=training$Survived, plot="pairs")
+fit <- glm(Survived ~ ., data=training, family=binomial("logit"))
+summary(fit)
+anova(fit, test="Chisq")
+
+set.seed(11)
+model_1 <- train(Survived ~ ., data=training, method="rpart", trControl=trainControl(method="cv"))
+pred_1 <- predict(model_1, validation)
+cm_1 <- confusionMatrix(pred_1, validation$Survived) 
+
+set.seed(11)
+model_2 <- train(Survived ~ ., data=training, method="glm", trControl=trainControl(method="cv"))
+pred_2 <- predict(model_2, validation)
+cm_2 <- confusionMatrix(pred_2, validation$Survived) 
+
+set.seed(11)
+model_3 <- train(Survived ~ ., data=training, method="rf", trControl=trainControl(method="cv"))
+pred_3 <- predict(model_3, validation)
+cm_3 <- confusionMatrix(pred_3, validation$Survived)
+
+set.seed(11)
+model_4 <- train(Survived ~ ., data=training, method="gbm", verbose=F, trControl=trainControl(method="cv"))
+pred_4 <- predict(model_4, validation)
+cm_4 <- confusionMatrix(pred_4, validation$Survived)
+
+set.seed(11)
+model_5 <- train(Survived ~ ., data=training, method="treebag", trControl=trainControl(method="cv"))
+pred_5 <- predict(model_5, validation)
+cm_5 <- confusionMatrix(pred_5, validation$Survived)
+
+set.seed(11)
+model_6 <- train(Survived ~ ., data=training, method="svmRadial", trControl=trainControl(method="cv"))
+pred_6 <- predict(model_6, validation)
+cm_6 <- confusionMatrix(pred_6, validation$Survived)
+
+set.seed(11)
+model_7 <- train(Survived ~ ., data=training, method="lda", trControl=trainControl(method="cv"))
+pred_7 <- predict(model_7, validation)
+cm_7 <- confusionMatrix(pred_7, validation$Survived)
+```
+
+
+### Combining Predictors (Majority Vote)
+```{r combineModels, echo=FALSE, message=FALSE, warning=FALSE}
+library(caret)
+library(plyr)
+getCombinedPrediction <- function(facPred) {
+    vPred <- facPred=="Survived"
+    predVal <- "Survived"
+    if(sum(vPred)/length(vPred) < 0.5)
+        predVal <- "Perished"
+    return(predVal)
+}
+combined <- data.frame(pred_1, pred_2, pred_3, pred_4, pred_5, pred_6, pred_7)
+pred_0 <- apply(combined, 1, getCombinedPrediction)
+pred_0 <- as.factor(pred_0)
+cm_0 <- confusionMatrix(pred_0, validation$Survived)
+```
+
+
+### Model Evaluation & Diagnostics 
+```{r diagnostics, echo=FALSE, message=FALSE, warning=FALSE}
+cm <- data.frame(rbind(c(model_1$method, round(cm_1$overall[1:2],4), round(cm_1$byClass[1:4],4)),
+                       c(model_2$method, round(cm_2$overall[1:2],4), round(cm_2$byClass[1:4],4)),
+                       c(model_3$method, round(cm_3$overall[1:2],4), round(cm_3$byClass[1:4],4)),
+                       c(model_4$method, round(cm_4$overall[1:2],4), round(cm_4$byClass[1:4],4)),
+                       c(model_5$method, round(cm_5$overall[1:2],4), round(cm_5$byClass[1:4],4)),
+                       c(model_6$method, round(cm_6$overall[1:2],4), round(cm_6$byClass[1:4],4)),
+                       c(model_7$method, round(cm_7$overall[1:2],4), round(cm_7$byClass[1:4],4)),
+                       c("Combined", round(cm_0$overall[1:2],4), round(cm_0$byClass[1:4],4))
+                       ))
+colnames(cm)[1] <- "Method"
+print(cm)
+
+# ROC Curves
+library(pROC)
+pred_1 <- predict(model_1, validation, type="prob")
+roc_1 <- roc(response=validation$Survived, predictor=pred_1$Survived, levels=levels(validation$Survived))
+pred_2 <- predict(model_2, validation, type="prob")
+roc_2 <- roc(response=validation$Survived, predictor=pred_2$Survived, levels=levels(validation$Survived))
+pred_3 <- predict(model_3, validation, type="prob")
+roc_3 <- roc(response=validation$Survived, predictor=pred_3$Survived, levels=levels(validation$Survived))
+pred_4 <- predict(model_4, validation, type="prob")
+roc_4 <- roc(response=validation$Survived, predictor=pred_4$Survived, levels=levels(validation$Survived))
+pred_5 <- predict(model_5, validation, type="prob")
+roc_5 <- roc(response=validation$Survived, predictor=pred_5$Survived, levels=levels(validation$Survived))
+pred_7 <- predict(model_7, validation, type="prob")
+roc_7 <- roc(response=validation$Survived, predictor=pred_7$Survived, levels=levels(validation$Survived))
+plot(roc_1)
+plot(roc_2, add=T, col=2)
+plot(roc_3, add=T, col=3)
+plot(roc_4, add=T, col=4)
+plot(roc_5, add=T, col=5)
+plot(roc_7, add=T, col=7)
+legendText <- c(model_1$method, model_2$method, model_3$method, model_4$method, model_5$method, model_7$method)
+legend("bottomright", legend=legendText, text.col=c(1:5,7))
+
+# Confidence Levels
+conflevels <- resamples(list(rpart=model_1, glm=model_2, rf=model_3, gbm=model_4,
+                             treebag=model_5, svmRadial=model_6, lda=model_7))
+dotplot(conflevels)
+```
+
+
+### Predictions
+```{r predictions, echo=FALSE, message=FALSE, warning=FALSE}
+library(caret)
+library(plyr)
+pred_t1 <- predict(model_1, dfFinalTest)
+pred_t2 <- predict(model_2, dfFinalTest)
+pred_t3 <- predict(model_3, dfFinalTest)
+pred_t4 <- predict(model_4, dfFinalTest)
+pred_t5 <- predict(model_5, dfFinalTest)
+pred_t6 <- predict(model_6, dfFinalTest)
+pred_t7 <- predict(model_7, dfFinalTest)
+combined_t <- data.frame(pred_t1, pred_t2, pred_t3, pred_t4, pred_t5, pred_t6, pred_t7)
+pred_test <- apply(combined_t, 1, getCombinedPrediction)
+pred_test <- as.factor(pred_test)
+
+pred_test <- predict(model_2, dfFinalTest)
+pred_test <- revalue(pred_test, c("Perished"="0","Survived"="1"))
+submit <- data.frame(PassengerId=dfFinalTest$PassengerId, Survived=pred_test)
+write.csv(submit, file="pred_combined.csv", row.names=F)
+print(submit)
+```

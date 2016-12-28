@@ -1,0 +1,21 @@
+{
+    "collab_server" : "",
+    "contents" : "df1 <- read.csv(\"submission_xgboost_avg.csv\")\ndf2 <- read.csv(\"submission_xgboost_avg_1111.csv\")\n\ndf <- merge(df1, df2, by = intersect(\"id\",\"id\"), all = T)\ndf <- df %>% mutate(loss = loss.x * 0.5 + loss.y * 0.5) %>% select(id, loss)\n\nwrite.csv(df, file = \"submission_xgboost_avg2.csv\", quote = F, row.names = F)\n\n",
+    "created" : 1481519541445.000,
+    "dirty" : true,
+    "encoding" : "",
+    "folds" : "",
+    "hash" : "3226084505",
+    "id" : "E3EFE43D",
+    "lastKnownWriteTime" : 6638343630536989728,
+    "last_content_update" : 1481519973011,
+    "path" : null,
+    "project_path" : null,
+    "properties" : {
+        "tempName" : "Untitled1"
+    },
+    "relative_order" : 6,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}

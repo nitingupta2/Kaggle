@@ -1,0 +1,8 @@
+"0","TARGET.VAR <- ""loss"""
+"0","vOutcomes <- readRDS(""vOutcomes.rds"")"
+"0","# Convert outcomes to log format"
+"0","vOutcomes <- log(vOutcomes)"
+"0","# Predictors"
+"0","vPredictors <- readRDS(""vFeatures.Dummified.rds"")"
+"0","# Dummified training set"
+"0","dfTrainDummified <- readRDS(""dfTrain.Dummified.rds"")"

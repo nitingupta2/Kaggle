@@ -1,0 +1,9 @@
+{
+    "path" : "C:/Backups/Kaggle/House_Prices",
+    "sortOrder" : [
+        {
+            "ascending" : true,
+            "columnIndex" : 2
+        }
+    ]
+}

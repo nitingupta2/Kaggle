@@ -1,0 +1,258 @@
+---
+title: "Competition Submisison"
+author: "Ron Luhtanen"
+date: "May 31, 2016"
+output: html_document
+---
+
+Loading in the data:
+
+```{r}
+train = read.csv("train2016.csv", stringsAsFactors = F, na.strings=c("",NA))
+predSet = read.csv("test2016.csv", stringsAsFactors = F, na.strings=c("",NA))
+```
+
+#Preprocessing of the data
+
+First remove unfeasible ages:
+
+```{r}
+age = 2016 - train$YOB
+ageVector =  (age <= 88 & age >= 15) | is.na(age)
+
+plot(age)
+summary(age)
+
+#It's pretty evident that there are invalid outliers. However, when trying to just remove outliers, only one value is removed. Therefore I just cap values to over 15 and under 88.
+
+#Then impute NA's for unfit values
+
+train$YOB[ageVector == F] = NA
+
+# Do the same for the testing set
+
+age = age = 2016 - predSet$YOB
+ageVector =  (age <= 88 & age >= 15) | is.na(age)
+
+plot(age)
+
+predSet$YOB[ageVector == F] = NA
+plot(predSet$YOB)
+
+#I experiented with having NA's for missing values as well as imputing all of them or parts of them with missForest and MICE. It yielded no significant improvements and I ended up assigning noAwswer factor for missing variables.
+
+train[is.na(train)] <- "noAnswer"
+predSet[is.na(predSet)] <- "noAnswer"
+```
+
+Convert back to factors:
+
+```{r}
+train[,3:108] = data.frame(lapply(train[,3:108], as.character), stringsAsFactors = T)
+predSet[,3:107] = data.frame(lapply(predSet[,3:107], as.character), stringsAsFactors = T)
+#Reorder the columns so we have ID then Party etc
+train = train[, c(1, 7, 2:6, 8:108)]
+```
+
+Prep for imputation by removing ID's + dependable variable and combining the validation and training sets:
+
+```{r}
+trainStore = train[,1:2]
+predSetStore = predSet[,1]
+
+train[,1:2] = NULL
+predSet[,1] = NULL
+
+#Train set has 5568 observations
+
+allData = rbind(train, predSet)
+
+# I ended up omitting the imputation so this part became irrelevant. Just didn't have time to remove it.
+```
+
+
+Join in the Classifier:
+```{r}
+
+#Creating the age groups, because this variable wasn't overly important and might have caused overfitting had I left it as numeric variable.
+
+allData$YOB = as.numeric(allData$YOB)
+allData$YOB = ifelse(is.na(allData$YOB), mean(allData$YOB, na.rm=T), allData$YOB)
+allData$YOB = cut(allData$YOB, 6)
+
+train = allData[1:5568,]
+train$Party = trainStore$Party
+train = train[,c(107,1:106)]
+
+```
+
+##Feature Selection
+
+Feature selection using ensemble and mRMRe, but first change the df into sparse matrix:
+```{r}
+library(mRMRe)
+library(Matrix)
+
+TrainMatrix = data.matrix(train)
+TrainMatrix = TrainMatrix -1
+
+mRMR_data = as.data.frame(target = Party, TrainMatrix)
+mRMR_data = mRMR.data(data = mRMR_data)
+
+feats = mRMR.ensemble(data = mRMR_data, target_indices = c(1), solution_count = 5, feature_count = 2)
+bestVars = data.frame('features'=featureNames(mRMR_data)[solutions(feats)[[1]]], 'scores'=scores(feats)[[1]])
+bestVars
+
+solutions(feats)
+
+#I'm also adding couple more questions by expert opinion: 64, 69, 20, 78, and Education and Household status 5 & 6
+selectedColumns = TrainMatrix[,c(1, 2, 3, 57, 106, 45, 67, 64, 69, 20, 78, 5, 6)]
+```
+
+Split into train and test: Not in this one
+```{r}
+# This was used in testing 
+
+# library(caTools)
+# 
+# set.seed(1)
+# split = sample.split(selectedColumns[,1], SplitRatio = .75)
+# imputedTest = subset(selectedColumns, split == F)
+# imputedTrain = subset(selectedColumns, split == T)
+
+
+#For submission create sparse matrix for validation set
+test = allData[5569:6960,]
+test = test[,c(1, 2, 56, 105, 44, 66, 63, 68, 19, 77, 4, 5)]
+test$makeshift = 0
+sparseTest = sparse.model.matrix(makeshift ~ .-1, data = test)
+
+```
+
+
+
+##Models
+
+###XGBoost
+
+```{r}
+library(xgboost)
+library(caret)
+library(Ckmeans.1d.dp)
+
+
+train = as.data.frame(train[,c(1, 2, 3, 57, 106, 45, 67, 64, 69, 20, 78, 5, 6)])
+
+
+sparseTrain = sparse.model.matrix(Party ~ . -1, data = train)
+
+
+labels = train[,1]
+labels = data.frame(labels, stringsAsFactors = F)
+labels = ifelse(labels == "Democrat", 0,1)
+
+bstSparse = xgboost(data = sparseTrain, label = labels, max.depth = 13, eta = 0.1, nthread = 4, nrounds = 1000, objective = "binary:logistic", verbose = 1)
+
+
+#For testing
+# predXG = predict(bstSparse, sparseTest)
+# threshold = .5
+# predXG = ifelse(predXG<threshold, 0,1)
+# accuracy = ifelse(predXG == testLabel, 1,0)
+# mean(accuracy)
+# 
+# names = dimnames(sparseTrain)[[2]]
+# importance_matrix <- xgb.importance(names, model = bstSparse)
+# xgb.plot.importance(importance_matrix[1:10,])
+
+
+##Creating a model spesific submission
+
+predXG = predict(bstSparse, sparseValidation)
+# threshold = .5
+# predXGLabels = as.factor(ifelse(predXG<threshold, "Democrat", "Republican"))
+# MySubmission = data.frame(USER_ID = predSet$USER_ID, Predictions = predXGLabels)
+# write.csv(MySubmission, "SubmissionXGBoost.csv", row.names=FALSE, quote = F)
+```
+
+###Simple logistic regression:
+
+```{r, eval=FALSE, include=FALSE}
+simpleLog = glm(Party ~ ., data=train, family=binomial)
+PredLog = predict(simpleLog, newdata=test, type="response")
+
+
+# Creating the submission:
+# threshold = 0.5
+# PredTestLabels = as.factor(ifelse(PredLog<threshold, "Democrat", "Republican"))
+# MySubmission = data.frame(USER_ID = test$USER_ID, Predictions = PredTestLabels)
+# write.csv(MySubmission, "SubmissionSimpleLog.csv", row.names=FALSE, quote = F)
+```
+
+
+###CART with k-fold cross validations
+
+```{r}
+library(caret)
+library(e1071)
+library(rpart)
+library(rpart.plot)
+
+
+numFolds = trainControl(method = "cv", number = 10)
+cpGrid = expand.grid(.cp=seq(0.01,0.5,0.01))
+
+train(Party ~ ., data = train, method = "rpart", trControl = numFolds, tuneGrid = cpGrid)
+
+#Best cp = 0.04
+
+kfCART = rpart(Party ~ ., data = train, cp = 0.04)
+
+prp(kfCART)
+
+predTree = predict(kfCART, newdata = test)
+
+
+#Creating the submission:
+
+# threshold = .5
+# predCARTLabels = as.factor(ifelse(predTree<threshold, "Democrat", "Republican"))
+# MySubmission = data.frame(USER_ID = test$USER_ID, Predictions = predCARTLabels)
+# write.csv(MySubmission, "SubmissionKFV_CART.csv", row.names=FALSE, quote = F)
+
+```
+
+
+###Random Forests
+
+```{r}
+library(randomForest)
+trainRF = train
+RF = randomForest(Party ~ ., data = trainRF, nodesize = 25, ntree = 500)
+predRF = predict(RF, newdata = test)
+predRF = as.numeric(predRF)-1
+
+#Creating a submission
+# MySubmission = data.frame(USER_ID = test$USER_ID, Predictions = predRF)
+# write.csv(MySubmission, "SubmissionRF.csv", row.names=FALSE, quote = F)
+
+```
+
+###Ensembling all 4 models:
+
+```{r}
+#Join all predictions
+
+predCart = predTree[,2]
+
+allPredictions = cbind.data.frame(predXG, predCart, PredLog, predRF)
+allPredictions = rowMeans(allPredictions)
+
+#Create a final submission
+threshold = .5
+allPredictions = as.factor(ifelse(allPredictions<threshold, "Democrat", "Republican"))
+MySubmission = data.frame(USER_ID = predSetStore, Predictions = allPredictions)
+write.csv(MySubmission, "Ensemble.csv", row.names=FALSE, quote = F)
+
+```
+

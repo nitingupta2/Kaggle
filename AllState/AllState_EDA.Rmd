@@ -1,0 +1,256 @@
+---
+title: "AllState_EDA"
+author: "Nitin Gupta"
+date: "October 16, 2016"
+output: html_document
+---
+
+
+```{r LoadLibs, echo=FALSE, message=FALSE, warning=FALSE}
+options(scipen = 5, width = 120)
+library(forcats)
+library(corrplot)
+library(gridExtra)
+library(vcd)
+library(caTools)
+library(caret)
+library(e1071)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(party)
+library(ROCR)
+library(plyr)
+library(tidyverse)
+```
+
+
+```{r LoadRawData, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+dfRawTrain <- read.csv("train.csv", header = T)
+dfRawTest <- read.csv("test.csv", header = T)
+
+ID.VAR <- "id"
+TARGET.VAR <- "loss"
+
+dfRawTest$loss <- NA
+
+str(dfRawTrain)
+summary(dfRawTrain)
+
+vFeatures <- setdiff(names(dfRawTrain), c(ID.VAR, TARGET.VAR))
+
+vFeaturesType <- sapply(vFeatures, function(Z) class(dfRawTrain[,Z]))
+table(vFeaturesType)
+
+vFeaturesCat <- names(dfRawTrain)[which(sapply(dfRawTrain, is.factor))]
+vFeaturesNum <- names(dfRawTrain)[which(sapply(dfRawTrain, is.numeric))]
+vFeaturesNum <- setdiff(vFeaturesNum, c(ID.VAR, TARGET.VAR))
+```
+
+
+No missing data.
+
+```{r Missing, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+dfCombined <- rbind(dfRawTrain, dfRawTest)
+sapply(names(dfCombined), function(Z) sum(is.na(dfCombined[,Z])))
+```
+
+
+Check for duplicated rows
+
+```{r Duplicate, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+cat("Number of duplicate rows =", nrow(dfCombined) - nrow(unique(dfCombined)))
+```
+
+
+```{r PlotFunctions, echo=FALSE, message=FALSE, warning=FALSE}
+
+plotBox <- function(dfInput, colIndex, yval, ylabel) {
+    df <- data.frame(x = dfInput[[colIndex]], y = yval)
+    p <- ggplot(df) +
+        geom_boxplot(aes(x = x, y = y, fill = x)) +
+        xlab(colnames(dfInput)[colIndex]) + ylab(ylabel) +
+        guides(fill = FALSE) +
+        theme_light()
+    return(p)
+}
+
+plotDensity <- function(dfInput, colIndex, xscale = c("normal","sqrt","log10"), yscale = c("normal","sqrt","log10")) {
+    df <- data.frame(x = dfInput[[colIndex]])
+    p <- ggplot(df, aes(x = x)) +
+        geom_histogram(aes(y = ..density..), bins = 30, color = "white", fill = "orange") +
+        geom_density(alpha = 0.2, fill="#FF6666") +
+        xlab(colnames(dfInput)[colIndex]) +
+        theme_light()
+    
+    if(xscale[1]=="sqrt") {
+        p <- p + scale_x_sqrt()
+    } else if(xscale[1] == "log10") {
+        p <- p + scale_x_log10()
+    }
+    
+    if(yscale[1]=="sqrt") {
+        p <- p + scale_y_sqrt()
+    } else if(yscale[1] == "log10") {
+        p <- p + scale_y_log10()
+    }
+    return(p)
+}
+
+plotHistogram <- function(dfInput, colIndex, xscale = c("normal","sqrt","log10"), yscale = c("normal","sqrt","log10")) {
+    df <- data.frame(x = dfInput[[colIndex]])
+    p <- ggplot(df) +
+        geom_histogram(aes(x = x), bins = 30, color = "white", fill = "orange") +
+        xlab(colnames(dfInput)[colIndex]) +
+        theme_light()
+    
+    if(xscale[1]=="sqrt") {
+        p <- p + scale_x_sqrt()
+    } else if(xscale[1] == "log10") {
+        p <- p + scale_x_log10()
+    }
+    
+    if(yscale[1]=="sqrt") {
+        p <- p + scale_y_sqrt()
+    } else if(yscale[1] == "log10") {
+        p <- p + scale_y_log10()
+    }
+    return(p)
+}
+
+plotScatter <- function(dfInput, colIndex, yval, ylabel) {
+    df <- data.frame(x = dfInput[[colIndex]], y = yval)
+    p <- ggplot(df, aes(x = x, y = y)) +
+        geom_point(alpha = 0.3) +
+        geom_smooth(method = lm, se = FALSE) +
+        xlab(colnames(dfInput)[colIndex]) + ylab(ylabel) +
+        theme_light()
+    return(p)
+}
+
+plotScatter2 <- function(dfInput, xcolName, ycolName) {
+    df <- data.frame(x = dfInput[[xcolName]], y = dfInput[[ycolName]])
+    p <- ggplot(df, aes(x = x, y = y)) +
+        geom_point(alpha = 0.3) +
+        geom_smooth(method = lm, se = FALSE) +
+        xlab(xcolName) + ylab(ycolName) +
+        theme_light()
+    return(p)
+}
+
+
+doPlotsSingleVar <- function(plotFunc, dfInput, vColIndexes, 
+                             xscale = c("normal", "sqrt", "log10"), 
+                             yscale = c("normal","sqrt","log10"), 
+                             ncol = 3) {
+    lPlots <- list()
+    for(i in vColIndexes) {
+        p <- plotFunc(dfInput, i, xscale, yscale)
+        lPlots <- c(lPlots, list(p))
+    }
+    do.call("grid.arrange", c(lPlots, ncol = min(length(vColIndexes), ncol)))
+}
+
+doPlotsDoubleVar <- function(plotFunc, dfInput, vColIndexes, yval, ylabel, ncol = 3) {
+    lPlots <- list()
+    for(i in vColIndexes) {
+        p <- plotFunc(dfInput, i, yval, ylabel)
+        lPlots <- c(lPlots, list(p))
+    }
+    do.call("grid.arrange", c(lPlots, ncol = min(length(vColIndexes), ncol)))
+}
+```
+
+
+```{r Boxplots, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+lSplits <- split(seq_along(vFeaturesCat), ceiling(seq_along(vFeaturesCat)/4))
+for(i in seq_along(lSplits)) {
+    vSplits <- lSplits[[i]]
+    doPlotsDoubleVar(plotBox, dfCombined[vFeaturesCat], vSplits, log(dfCombined$loss), "log(loss)", ncol = 2)
+}
+```
+
+
+```{r Densityplots, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+lSplits <- split(seq_along(vFeaturesNum), ceiling(seq_along(vFeaturesNum)/9))
+for(i in seq_along(lSplits)) {
+    vSplits <- lSplits[[i]]
+    doPlotsSingleVar(plotDensity, dfCombined[vFeaturesNum], vSplits, ncol = 3)
+}
+```
+
+
+```{r Scatterplots, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+lSplits <- split(seq_along(vFeaturesNum), ceiling(seq_along(vFeaturesNum)/9))
+for(i in seq_along(lSplits)) {
+    vSplits <- lSplits[[i]]
+    doPlotsDoubleVar(plotScatter, dfCombined[vFeaturesNum], vSplits, log(dfCombined$loss), "log(loss)", ncol = 3)
+}
+```
+
+
+```{r recategorize, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+# recategorize factors where the number of cases are below 0.1% threshold
+print("Recategorizing seldom used factor levels")
+
+threshold <- 0.001
+for(catFeature in vFeaturesCat) {
+    if(length(levels(dfCombined[[catFeature]])) >= 5) {
+        dfCombined[[catFeature]] <- fct_lump(dfCombined[[catFeature]], prop = threshold)
+    }
+}
+lSplits <- split(seq_along(vFeaturesCat), ceiling(seq_along(vFeaturesCat)/4))
+for(i in seq_along(lSplits)) {
+    vSplits <- lSplits[[i]]
+    doPlotsDoubleVar(plotBox, dfCombined[vFeaturesCat], vSplits, log(dfCombined$loss), "log(loss)", ncol = 2)
+}
+```
+
+
+Correlations
+
+```{r Correlations, echo=FALSE, message=FALSE, warning=FALSE}
+mCor <- cor(dfCombined[vFeaturesNum])
+corrplot(mCor, method = "square", order = "hclust")
+
+cor_threshold <- 0.7
+dfCor <- data.frame()
+for(i in 1:(ncol(mCor)-1)) {
+    for(j in (i+1):ncol(mCor)) {
+        if(abs(mCor[i,j]) >= cor_threshold) {
+            dfCor <- rbind(dfCor, data.frame(Feature1 = colnames(mCor)[i], 
+                                             Feature2 = colnames(mCor)[j],
+                                             Correlation = mCor[i, j],
+                                             stringsAsFactors = F))
+        }
+    }
+}
+
+dfCor <- dfCor %>% arrange(desc(abs(Correlation)))
+```
+
+
+Numeric features with correlations greater than `r cor_threshold`
+
+```{r HighCorrelations, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+for(i in seq_along(dfCor$Feature1)) {
+    xcolName <- dfCor$Feature1[i]
+    ycolName <- dfCor$Feature2[i]
+    print(plotScatter2(dfCombined, xcolName, ycolName))
+}
+```
+
+
+```{r FinalDataSets, echo=FALSE, message=FALSE, warning=FALSE}
+dfTrain <- dfCombined %>% dplyr::filter(!is.na(loss))
+dfTest <- dfCombined %>% dplyr::filter(is.na(loss)) %>% select(-loss)
+
+# Remove combined data frame
+rm(dfCombined) ; rm(dfRawTrain) ; rm(dfRawTest)
+```
+
+
+```{r saveTrainTest, echo=FALSE, message=FALSE, warning=FALSE}
+write.csv(dfTrain, file = "train_final.csv", row.names = F, quote = F)
+write.csv(dfTest, file = "test_final.csv", row.names = F, quote = F)
+```

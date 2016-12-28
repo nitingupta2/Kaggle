@@ -1,0 +1,105 @@
+---
+title: "Kaggle - Random Acts Of Pizza"
+author: "Nitin Gupta"
+date: "Saturday, October 11, 2014"
+output: html_document
+---
+
+### Reading Data
+```{r}
+library(jsonlite)
+
+dfRaw <- fromJSON("train.json")
+vFeaturesInRaw <- colnames(dfRaw)
+
+dfTest <- fromJSON("test.json")
+vFeaturesInTest <- c(colnames(dfTest), "requester_received_pizza")
+
+# Remove extra features from dfRaw
+vFeaturesNotInTest <- vFeaturesInRaw[!(vFeaturesInRaw %in% vFeaturesInTest)]
+dfRaw <- dfRaw[,vFeaturesInTest]
+
+# Rename features to shorten length of feature names
+vFeaturesShort <- c("giver","reqId","textEdited","title","accAge","daysSinceRAOPPost",
+                    "nCmntsOnReddit","nCmntsOnRAOP","nPostsOnReddit","nPostsOnRAOP","nSubReddits","listSubReddits",
+                    "netVotes","totalVotes","requester","timestamp","timestampUTC","recdPizza")
+colnames(dfRaw) <- vFeaturesShort
+colnames(dfTest) <- vFeaturesShort[-length(vFeaturesShort)]
+```
+
+
+### Feature Engineering
+```{r featureEngg, echo=FALSE, message=FALSE, warning=FALSE}
+# Remove features not important for prediction
+vFeaturesToInclude <- c("textEdited","title","accAge","daysSinceRAOPPost","nCmntsOnReddit","nCmntsOnRAOP",
+                        "nPostsOnReddit","nPostsOnRAOP","nSubReddits","netVotes","totalVotes","requester",
+                        "timestampUTC","recdPizza")
+
+preProcessData <- function(df=data.frame()) {
+    if("recdPizza" %in% colnames(df)) {
+        dfSub <- df[,vFeaturesToInclude]
+        dfSub$recdPizza <- as.factor(dfSub$recdPizza)
+    }
+    else {
+        dfSub <- df[,vFeaturesToInclude[-length(vFeaturesToInclude)]]
+    }
+    
+    # Add Features: upVotes & dnVotes
+    dfSub$upVotes <- (dfSub$totalVotes + dfSub$netVotes)/2
+    dfSub$dnVotes <- (dfSub$totalVotes - dfSub$netVotes)/2
+    
+    return(dfSub)
+}
+
+dfRawSub <- preProcessData(dfRaw)
+dfFinal <- preProcessData(dfTest)
+```
+
+
+### Exploratory Data Analysis
+```{r eda, echo=FALSE, message=FALSE, warning=FALSE}
+summary(dfRawSub[,-c(1:2)])
+str(dfRawSub[,-c(1:2)])
+
+# Barplot & Histograms
+with(dfRawSub, barplot(table(recdPizza), main="Received Pizza"))
+with(dfRawSub, hist(accAge, col="red"))
+with(dfRawSub, hist(daysSinceRAOPPost, col="red"))
+with(dfRawSub, hist(nCmntsOnReddit, col="red"))
+with(dfRawSub, hist(nCmntsOnRAOP, col="red"))
+with(dfRawSub, hist(nPostsOnReddit, col="red"))
+with(dfRawSub, hist(nPostsOnRAOP, col="red"))
+with(dfRawSub, hist(nSubReddits, col="red"))
+with(dfRawSub, hist(upVotes, col="red"))
+with(dfRawSub, hist(dnVotes, col="red"))
+
+# Boxplots by recdPizza
+with(dfRawSub, boxplot(log(dnVotes) ~ recdPizza))
+
+# dfClean <- dfRawSub[,-c(1:2)]
+# library(caret)
+# featurePlot(x=dfClean, y=dfClean$recdPizza, plot="pairs")
+```
+
+
+### Model Building
+```{r models, echo=FALSE, message=FALSE, warning=FALSE}
+dfClean <- dfRawSub[,-c(1:2)]
+
+library(caret)
+set.seed(11)
+inTrain <- createDataPartition(dfClean$recdPizza, p=0.7, list=FALSE)
+training <- dfClean[inTrain, ]
+validation <- dfClean[-inTrain, ]
+rm(inTrain)
+
+
+library(rf)
+set.seed(11)
+model_1 <- randomForest(recdPizza ~ ., data=training)
+pred_1 <- predict(model_1, validation)
+cm_1 <- confusionMatrix(pred_1, validation$recdPizza)
+cm_1
+```
+
+
