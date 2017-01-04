@@ -4,25 +4,27 @@ library(magrittr)
 library(tidyverse)
 library(ggplot2)
 library(xgboost)
+library(foreach)
+library(doParallel)
+registerDoParallel(cores = 4)
 
-preProcessFuncName <- "preProcess7"
+preProcessFuncName <- "ensemble"
 
 ID_VAR <- "USER_ID"
 TARGET_VAR <- "Party"
 
-getAUC <- function(y_prob, ylabel) {
-    yhat <- ifelse(y_prob <= 0.5, "Democrat", "Republican")
-    ModelMetrics::auc(ylabel, as.factor(yhat))
-}
-
-custom_eval_func <- function (yhat, x_train) {
-    y = getinfo(x_train, "label")
-    y_pred = as.integer(yhat > 0.5)
-    err = ModelMetrics::auc(y, y_pred)
-    return (list(metric = "auc", value = err))
-}
-
-if(preProcessFuncName == "preProcess1") {
+if(preProcessFuncName == "ensemble") {
+    lParams_xgboost <- list(eta = 0.02,
+                            max_depth = 3,
+                            min_child_weight = 10,
+                            subsample = 0.6,
+                            colsample_bytree = 0.7,
+                            gamma = 1,
+                            alpha = 1,
+                            best_nrounds = 6,
+                            nthreads = 4
+    )
+} else if(preProcessFuncName == "preProcess1") {
     lParams_xgboost <- list(eta = 0.6,
                             max_depth = 1,
                             min_child_weight = 100,
@@ -99,18 +101,40 @@ if(preProcessFuncName == "preProcess1") {
                             best_nrounds = 78,
                             nthreads = 4
     )
+} else if(preProcessFuncName == "preProcess8") {
+    lParams_xgboost <- list(eta = 0.4,
+                            max_depth = 3,
+                            min_child_weight = 100,
+                            subsample = 1,
+                            colsample_bytree = 1,
+                            gamma = 1,
+                            alpha = 1,
+                            best_nrounds = 25,
+                            nthreads = 4
+    )
 }
 
-model_xgboost <- function(dfTrain_fold, dfTest_fold, numFolds, seedForFolds) {
+
+custom_eval_func <- function (yhat, x_train) {
+    y <- getinfo(x_train, "label")
+    y_pred <- as.integer(yhat > 0.5)
     
-    smm_train_fold <- sparse.model.matrix(Party ~ . -1, data = dfTrain_fold %>% select(-starts_with(ID_VAR)))
+    # Accuracy = 1 - classification error
+    acc <- 1 - ModelMetrics::ce(y, y_pred)
+    return (list(metric = "accuracy", value = acc))
+}
+
+model_xgboost <- function(dfTrain_fold, dfTest_fold, dfTest, seedForFolds) {
+
+    formula1 <- as.formula(paste(TARGET_VAR, ". -1", sep = " ~ "))    
+    smm_train_fold <- sparse.model.matrix(formula1, data = dfTrain_fold %>% select(-starts_with(ID_VAR)))
     y_train_fold <- as.integer(as.factor(dfTrain_fold[[TARGET_VAR]])) - 1
     x_train_fold <- xgb.DMatrix(data = smm_train_fold, label = y_train_fold)
     
-    smm_test_fold <- sparse.model.matrix(Party ~ . -1, data = dfTest_fold %>% select(-starts_with(ID_VAR)))
+    smm_test_fold <- sparse.model.matrix(formula1, data = dfTest_fold %>% select(-starts_with(ID_VAR)))
     x_test_fold <- xgb.DMatrix(data = smm_test_fold)
     
-    smm_test <- sparse.model.matrix(Party ~ . -1, data = dfTest %>% select(-starts_with(ID_VAR)))
+    smm_test <- sparse.model.matrix(formula1, data = dfTest %>% select(-starts_with(ID_VAR)))
     x_test <- xgb.DMatrix(data = smm_test)
     
     set.seed(seedForFolds)
@@ -148,11 +172,11 @@ set.seed(SEED)
 # Generate seeds for creating folds
 vSeeds <- sample(10000, numRoundsForFolds)
 
-lPred_train <- list()
-lPred_test <- list()
+print("Parameters used:")
+print(as.data.frame(lParams_xgboost))
 
 # Generate folds for different seeds
-for(v in seq_along(vSeeds)) {
+lPred_model <- foreach(v = seq_along(vSeeds)) %dopar% {
     vTrain <- rep(0, ntrain) ; names(vTrain) <- dfTrain[[ID_VAR]]
     vTest <- rep(0, ntest) ; names(vTest) <- dfTest[[ID_VAR]]
     vTestIDs <- as.character(dfTest[[ID_VAR]])
@@ -161,12 +185,15 @@ for(v in seq_along(vSeeds)) {
     seedForFolds <- vSeeds[v]
     set.seed(seedForFolds)
     lFolds <- caret::createFolds(dfTrain[[TARGET_VAR]], k = numFolds)
-    
-    print("Parameters used:")
-    print(as.data.frame(lParams_xgboost))
 
     for(i in 1:numFolds) {
+        library(Matrix)
+        library(magrittr)
+        library(tidyverse)
+        library(xgboost)
+        
         print(paste("Training", i, "of", numFolds, "folds using seed", seedForFolds))
+        
         idx_test <- lFolds[[i]]
         dfTest_fold <- dfTrain[idx_test,]
         dfTrain_fold <- dfTrain[-idx_test,]
@@ -174,32 +201,36 @@ for(v in seq_along(vSeeds)) {
         print(paste("Training fold observations:", nrow(dfTrain_fold)))
         print(paste("Test fold observations:", nrow(dfTest_fold)))
         
-        lResults <- model_xgboost(dfTrain_fold, dfTest_fold, numFolds, seedForFolds)
+        lResults <- model_xgboost(dfTrain_fold, dfTest_fold, dfTest, seedForFolds)
         
         vTrainIDs <- as.character(lResults$id_oof)
         vTrain[vTrainIDs] <- vTrain[vTrainIDs] + lResults$pred_oof
         vTest[vTestIDs] <- vTest[vTestIDs] + lResults$pred_test
     }
     
-    lPred_model <- list(train_prob = vTrain, test_prob = vTest/numFolds)
-    
-    lPred_train[[v]] <- lPred_model$train_prob
-    lPred_test[[v]] <- lPred_model$test_prob
+    list(train_prob = vTrain, test_prob = vTest/numFolds)
 }
+
+lPred_train <- lapply(lPred_model, function(x) x$train_prob)
+lPred_test <- lapply(lPred_model, function(x) x$test_prob)
 
 dfPred_train <- do.call(cbind.data.frame, lPred_train)
 dfPred_train <- dfPred_train %>% 
-                set_colnames(paste(TARGET_VAR, vSeeds, sep = "_")) %>% 
-                rownames_to_column(var = ID_VAR) %>% 
-                mutate(Party = dfTrain[[TARGET_VAR]])
-write.csv(dfPred_train, file = paste0("ensemble_xgboost_train_", preProcessFuncName, ".csv"), row.names = F, quote = F)
+                set_colnames(paste("xgboost", preProcessFuncName, vSeeds, sep = "_")) %>% 
+                rownames_to_column(var = ID_VAR)
 
 dfPred_test <- do.call(cbind.data.frame, lPred_test)
 dfPred_test <- dfPred_test %>% 
-                set_colnames(paste(TARGET_VAR, vSeeds, sep = "_")) %>% 
+                set_colnames(paste("xgboost", preProcessFuncName, vSeeds, sep = "_")) %>% 
                 rownames_to_column(var = ID_VAR)
-write.csv(dfPred_test, file = paste0("ensemble_xgboost_test_", preProcessFuncName, ".csv"), row.names = F, quote = F)
 
+if(preProcessFuncName != "ensemble") {
+    write.csv(dfPred_train, file = paste0("ensemble_xgboost_train_", preProcessFuncName, ".csv"), row.names = F, quote = F)
+    write.csv(dfPred_test, file = paste0("ensemble_xgboost_test_", preProcessFuncName, ".csv"), row.names = F, quote = F)
+}
+
+#########################################################################################################################
+# Average test predictions
 #########################################################################################################################
 dfPred_test$Party_prob <- rowMeans(dfPred_test[-1])
 dfPred_test <- dfPred_test %>% 

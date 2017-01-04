@@ -105,7 +105,7 @@ USER_ID,PREDICTIONS
 518,Democrat
 519,Democrat
 522,Republican
-523,Democrat
+523,Republican
 528,Republican
 530,Democrat
 543,Democrat
@@ -113,7 +113,7 @@ USER_ID,PREDICTIONS
 553,Republican
 556,Democrat
 558,Democrat
-562,Democrat
+562,Republican
 563,Democrat
 565,Republican
 567,Republican
@@ -164,11 +164,11 @@ USER_ID,PREDICTIONS
 847,Democrat
 863,Republican
 864,Republican
-866,Democrat
+866,Republican
 870,Republican
 873,Democrat
 878,Democrat
-883,Democrat
+883,Republican
 885,Republican
 886,Democrat
 897,Democrat
@@ -261,7 +261,7 @@ USER_ID,PREDICTIONS
 1344,Republican
 1362,Democrat
 1364,Democrat
-1367,Democrat
+1367,Republican
 1371,Republican
 1374,Democrat
 1381,Democrat
@@ -285,7 +285,7 @@ USER_ID,PREDICTIONS
 1484,Republican
 1490,Democrat
 1497,Democrat
-1499,Republican
+1499,Democrat
 1503,Republican
 1511,Democrat
 1516,Republican
@@ -293,7 +293,7 @@ USER_ID,PREDICTIONS
 1522,Democrat
 1523,Democrat
 1529,Republican
-1536,Republican
+1536,Democrat
 1540,Republican
 1545,Democrat
 1548,Republican
@@ -337,13 +337,13 @@ USER_ID,PREDICTIONS
 1708,Democrat
 1719,Republican
 1723,Democrat
-1731,Republican
+1731,Democrat
 1734,Democrat
 1736,Republican
 1748,Republican
 1750,Republican
 1751,Democrat
-1757,Republican
+1757,Democrat
 1763,Democrat
 1766,Republican
 1767,Democrat
@@ -371,7 +371,7 @@ USER_ID,PREDICTIONS
 1918,Republican
 1921,Democrat
 1925,Republican
-1936,Republican
+1936,Democrat
 1940,Republican
 1941,Republican
 1947,Republican
@@ -543,7 +543,7 @@ USER_ID,PREDICTIONS
 2746,Democrat
 2748,Republican
 2752,Republican
-2753,Democrat
+2753,Republican
 2758,Democrat
 2772,Democrat
 2800,Democrat
@@ -699,7 +699,7 @@ USER_ID,PREDICTIONS
 3550,Democrat
 3552,Democrat
 3554,Democrat
-3560,Democrat
+3560,Republican
 3563,Republican
 3572,Republican
 3574,Democrat
@@ -738,7 +738,7 @@ USER_ID,PREDICTIONS
 3749,Republican
 3753,Democrat
 3760,Democrat
-3762,Republican
+3762,Democrat
 3768,Democrat
 3770,Democrat
 3781,Republican
@@ -752,13 +752,13 @@ USER_ID,PREDICTIONS
 3810,Republican
 3817,Republican
 3819,Democrat
-3827,Republican
+3827,Democrat
 3829,Republican
 3833,Democrat
 3836,Democrat
-3842,Republican
+3842,Democrat
 3843,Democrat
-3845,Democrat
+3845,Republican
 3848,Republican
 3853,Democrat
 3856,Republican
@@ -800,7 +800,7 @@ USER_ID,PREDICTIONS
 4065,Republican
 4069,Republican
 4077,Democrat
-4079,Republican
+4079,Democrat
 4085,Republican
 4086,Republican
 4094,Democrat
@@ -899,11 +899,11 @@ USER_ID,PREDICTIONS
 4551,Democrat
 4557,Democrat
 4559,Democrat
-4562,Democrat
+4562,Republican
 4564,Republican
 4566,Republican
 4567,Republican
-4568,Republican
+4568,Democrat
 4577,Democrat
 4580,Democrat
 4586,Democrat
@@ -963,7 +963,7 @@ USER_ID,PREDICTIONS
 4877,Republican
 4879,Democrat
 4882,Democrat
-4888,Republican
+4888,Democrat
 4891,Democrat
 4893,Democrat
 4899,Democrat
@@ -981,7 +981,7 @@ USER_ID,PREDICTIONS
 4961,Democrat
 4963,Democrat
 4967,Republican
-4971,Republican
+4971,Democrat
 4980,Democrat
 4991,Democrat
 4993,Democrat
@@ -1058,7 +1058,7 @@ USER_ID,PREDICTIONS
 5335,Democrat
 5339,Democrat
 5342,Democrat
-5343,Democrat
+5343,Republican
 5347,Democrat
 5349,Republican
 5352,Republican
@@ -1108,7 +1108,7 @@ USER_ID,PREDICTIONS
 5574,Republican
 5576,Democrat
 5577,Republican
-5581,Republican
+5581,Democrat
 5585,Democrat
 5589,Democrat
 5592,Republican
@@ -1304,7 +1304,7 @@ USER_ID,PREDICTIONS
 6565,Democrat
 6576,Democrat
 6577,Democrat
-6578,Democrat
+6578,Republican
 6582,Democrat
 6583,Democrat
 6585,Democrat
@@ -1340,7 +1340,7 @@ USER_ID,PREDICTIONS
 6701,Democrat
 6705,Democrat
 6709,Republican
-6723,Democrat
+6723,Republican
 6724,Republican
 6728,Democrat
 6732,Republican
@@ -1350,11 +1350,11 @@ USER_ID,PREDICTIONS
 6781,Democrat
 6785,Democrat
 6790,Republican
-6791,Democrat
+6791,Republican
 6795,Republican
 6796,Democrat
 6799,Republican
-6807,Republican
+6807,Democrat
 6811,Democrat
 6813,Democrat
 6814,Republican
@@ -1379,7 +1379,7 @@ USER_ID,PREDICTIONS
 6879,Democrat
 6887,Democrat
 6892,Republican
-6895,Democrat
+6895,Republican
 6898,Republican
 6904,Democrat
 6914,Republican

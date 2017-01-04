@@ -1,0 +1,554 @@
+---
+title: "VotersParty"
+author: "Nitin Gupta"
+date: "June 13, 2016"
+output: html_document
+---
+
+
+### Dataset features
+
+* USER_ID - an anonymous id unique to a given user
+* YOB - the year of birth of the user
+* Gender - the gender of the user, either Male or Female
+* Income - the household income of the user. Either not provided, or one of "under $25,000", "$25,001 - $50,000", "$50,000 - $74,999", "$75,000 - $100,000", "$100,001 - $150,000", or "over $150,000".
+* HouseholdStatus - the household status of the user. Either not provided, or one of "Domestic Partners (no kids)", "Domestic Partners (w/kids)", "Married (no kids)", "Married (w/kids)", "Single (no kids)", or "Single (w/kids)".
+* EducationalLevel - the education level of the user. Either not provided, or one of "Current K-12", "High School Diploma", "Current Undergraduate", "Associate's Degree", "Bachelor's Degree", "Master's Degree", or "Doctoral Degree".
+* Party - the political party for whom the user intends to vote for. Either "Democrat" or "Republican
+* Q124742, Q124122, . . . , Q96024 - 101 different questions that the users were asked on Show of Hands. If the user didn't answer the question, there is a blank. For information about the question text and possible answers, see the file Questions.pdf.
+
+__Note to Self__: In many cases, the demographic data is not provided or misstated (YOB).
+How to deal with this?
+
+* Read everything as character
+* Treat missing survey data as 'dnr' (did not respond)
+* Change survey data to factors
+* Impute demographic data and then convert to factors
+
+### Read Data
+
+```{r LoadData, message=FALSE, warning=FALSE}
+options(scipen = 5, width = 100)
+library(magrittr)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(vcd)
+library(caTools)
+library(caret)
+library(e1071)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(party)
+library(ROCR)
+source("C:\\Backups\\Dropbox\\Dev\\R\\Source\\Func_corProb.R")
+source("C:\\Backups\\Dropbox\\Dev\\R\\Source\\Func_flattenSquareMatrix.R")
+source("C:\\Backups\\Dropbox\\Dev\\R\\Source\\Func_getModelCharacteristics.R")
+
+dfQuestions <- read.delim("questions.tsv") %>% set_colnames(c("ID", "QnA"))
+dfQuestions$ID <- paste0("Q", dfQuestions$ID)
+
+dfRawTrain <- read.csv("train2016.csv", na.strings = c("", NA))
+dfRawTest <- read.csv("test2016.csv", na.strings = c("", NA))
+dfRawTest$Party <- NA
+
+names(dfRawTrain)
+vFeaturesDemographic <- c("Party", "YOB", "Gender", "Income", "HouseholdStatus", "EducationLevel")
+vFeaturesSurveyQues <- names(dfRawTrain)[!(names(dfRawTrain) %in% vFeaturesDemographic)]
+# exclude USER_ID from survey questions
+vFeaturesSurveyQues <- vFeaturesSurveyQues[-1]
+
+# Summaries of demographic features
+summary(dfRawTrain[vFeaturesDemographic])
+summary(dfRawTest[vFeaturesDemographic])
+```
+
+
+### Exploratory Data Analysis
+
+
+```{r EDA}
+# Missing data by USER_ID ordered from both training and test sets
+dfCombined <- rbind(dfRawTrain, dfRawTest) %>% arrange(USER_ID)
+Amelia::missmap(dfCombined, 
+                main="Missing Map", col=c("yellow","black"), legend=F, 
+                x.cex = 0.6, y.cex = 0.5, y.lab=F, y.at=F, rank.order = F)
+# Missing data by number of missing survey responses
+dfCombined$NumMissingSurvey <- apply(dfCombined[vFeaturesSurveyQues], 1, function(Z) sum(is.na(Z)))
+dfCombined <- dfCombined %>% arrange(desc(NumMissingSurvey))
+Amelia::missmap(dfCombined, 
+                main="Missing Map", col=c("yellow","black"), legend=F, 
+                x.cex = 0.6, y.cex = 0.5, y.lab=F, y.at=F, rank.order = F)
+rm(dfCombined)
+
+# Histograms
+######################################################################################################
+ggplot(dfRawTrain, aes(x = YOB, fill = Party)) +
+    geom_histogram(binwidth = 10, color = "black") +
+    scale_x_continuous(limits = c(1930, 2003)) +
+    scale_fill_manual(values = c("blue","red"))
+summary(dfRawTrain$YOB)
+# Median YOB by gender: Female 1983, Male 1982
+tapply(dfRawTrain$YOB, dfRawTrain$Gender, median, na.rm = T)
+
+# Many outliers and anomalies. For model building exclude YOB > 2003 and YOB < 1930
+dfRawTrain[vFeaturesDemographic] %>% subset(YOB > 2003)
+dfRawTrain[vFeaturesDemographic] %>% subset(YOB < 1930)
+        
+ggplot(dfRawTest, aes(x = YOB)) +
+    geom_histogram(binwidth = 1, color = "black", fill = "white") 
+summary(dfRawTest$YOB)
+subset(dfRawTest[vFeaturesDemographic], YOB < 1930)
+
+# Boxplots
+######################################################################################################
+ggplot(dfRawTrain, aes(x = Party, y = YOB, fill = Party)) +
+    geom_boxplot(position = "dodge") +
+    scale_fill_manual(values = c("blue", "red"))
+# Nothing remarkable here
+
+ggplot(dfRawTrain, aes(x = Gender, y = YOB, fill = Party)) +
+    geom_boxplot(position = "dodge") +
+    scale_fill_manual(values = c("blue", "red"))
+# Nothing remarkable here
+
+ggplot(dfRawTrain, aes(x = HouseholdStatus, y = YOB, fill = Party)) +
+    geom_boxplot(position = "dodge") +
+    scale_fill_manual(values = c("blue", "red")) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# Median ages of voters of status 'Single (no kids)' and NA have significant differences with the rest
+# This indicates it could be a useful predictor
+# Median ages of voters indicated by 'Single (no kids)' is ~ same as those who have not provided an answer
+# Assign 'Single (no kids)' to HouseholdStatus NA
+
+ggplot(dfRawTrain, aes(x = EducationLevel, y = YOB, fill = Party)) +
+    geom_boxplot(position = "dodge") +
+    scale_fill_manual(values = c("blue", "red")) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+table(dfRawTrain$EducationLevel, dfRawTrain$Party)
+# As expected, median ages of Current K-12 and Current Undergraduate are significantly different from the rest
+# But these groups have very small sample sizes relative to the rest
+# People who didn't provide EducationLevel are more likely to be dropouts. Label EducationLevel NA as 'dropout'
+
+ggplot(dfRawTrain, aes(x = Income, y = YOB, fill = Party)) +
+    geom_boxplot(position = "dodge") +
+    scale_fill_manual(values = c("blue", "red")) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+table(dfRawTrain$EducationLevel, dfRawTrain$Income, useNA = "ifany")
+# Where Income is NA, assign Income by the category in which the maximum number of voters fall by EducationLevel
+
+# Relationship between 3 categorical variables
+ggplot(dfRawTrain, aes(x = Income, fill = Party)) + 
+    geom_bar() + 
+    facet_grid(EducationLevel~Gender, scales = "free_y") + 
+    scale_fill_manual(values = c("blue","red"))
+
+ggplot(dfRawTrain, aes(x = Q109244, fill = Party)) + 
+    geom_bar() + 
+    facet_grid(Q101163~Q113181, scales = "free_y") + 
+    scale_fill_manual(values = c("blue","red"))
+
+
+# Heatmaps
+######################################################################################################
+ggplot(dfRawTrain, aes(x = EducationLevel, y = Income)) +
+    geom_tile(aes(fill = YOB)) +
+    scale_fill_gradient(low="yellow", high="cyan", limits = c(1930, 2003))
+table(dfRawTrain$EducationLevel, dfRawTrain$Income, useNA = "ifany")
+# Voters with Masters degrees earning b/w $25,000 - $50,000 were born in 1940s => Retirees on Social Security income
+# High income voters with Associate degrees are older 
+
+ggplot(dfRawTrain, aes(x = EducationLevel, y = HouseholdStatus)) +
+    geom_tile(aes(fill = YOB)) +
+    scale_fill_gradient(low="yellow", high="cyan", limits = c(1930, 2003))
+table(dfRawTrain$EducationLevel, dfRawTrain$HouseholdStatus, useNA = "ifany")
+# Voters with Masters degrees earning b/w $25,000 - $50,000 were born in 1940s
+# High income voters with Associate degrees are older 
+
+ggplot(dfRawTrain, aes(x = HouseholdStatus, y = Income)) +
+    geom_tile(aes(fill = YOB)) +
+    scale_fill_gradient(low="yellow", high="cyan", limits = c(1930, 2003))
+table(dfRawTrain$HouseholdStatus, dfRawTrain$Income, useNA = "ifany")
+
+# Two-way tables, Stacked barplots & Mosaic Plots
+######################################################################################################
+vFeaturesCat <- c("Gender", "EducationLevel", "Income", "HouseholdStatus")
+lapply(dfRawTrain[vFeaturesCat], FUN = function(x) table(x, dfRawTrain[["Party"]], useNA = "ifany"))
+
+plotStackedBar <- function(dfInput, feature_cat1, feature_cat2) {
+    df <- data.frame(x = dfInput[[feature_cat1]], y = dfInput[[feature_cat2]])
+    p <- ggplot(df) +
+        geom_bar(aes(x = x, y = ..count.., fill = y)) +
+        scale_fill_manual(values = c("blue","red"), name = feature_cat2) +
+        xlab(feature_cat1) +
+        ggtitle(paste("Stacked barplot of", feature_cat1, "w.r.t.", feature_cat2)) +
+        theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
+    
+    return(p)
+}
+
+plotMosaic <- function(dfInput, feature_cat1, feature_cat2) {
+    df <- data.frame(x = dfInput[[feature_cat1]], y = dfInput[[feature_cat2]])
+    vColors <- c("blue","red")
+    p <- with(df, mosaicplot(x ~ y, shade=F, color = vColors,
+                             xlab=feature_cat1, ylab=feature_cat2, 
+                             main=paste("Voting by", feature_cat2)))
+    
+    return(p)
+}
+
+for(feature in vFeaturesCat) {
+    print(plotStackedBar(dfRawTrain, feature, "Party"))
+    print(plotMosaic(dfRawTrain, feature, "Party"))
+}
+
+# Prediction accuracy of Survey questions
+dfSurveyAccuracy <- data.frame()
+for(i in 1:length(vFeaturesSurveyQues)) {
+    tbl <- table(dfRawTrain[c("Party", vFeaturesSurveyQues[i])])
+    GOP_accuracy <- round(sum(diag(tbl))/sum(tbl), digits = 4)
+    DEM_accuracy <- round((tbl[1,2] + tbl[2,1])/sum(tbl), digits = 4)
+    dfSurveyAccuracy = rbind(dfSurveyAccuracy, data.frame(ques = vFeaturesSurveyQues[i], GOP_accuracy, DEM_accuracy))
+}
+rm(GOP_accuracy) ; rm(DEM_accuracy) ; rm(tbl)
+dfSurveyAccuracy <- dfSurveyAccuracy %>% arrange(desc(GOP_accuracy))
+head(dfSurveyAccuracy, 10)
+dfSurveyAccuracy <- dfSurveyAccuracy %>% arrange(desc(DEM_accuracy))
+head(dfSurveyAccuracy, 10)
+```
+
+
+### Preprocessing and Feature Engineering
+
+```{r Preprocessing, echo=FALSE, message=FALSE, warning=FALSE}
+# Merge training and test sets
+dfMerged <- rbind(dfRawTrain, dfRawTest)
+
+# With chisq goodness of fit determine survey questions whose probability distribution 
+# is very different from Party distribution in the data set
+dfXsq <- data.frame()
+for(i in 1:length(vFeaturesSurveyQues)) {
+    indexQ <- which(names(dfMerged) == vFeaturesSurveyQues[i])
+    tbl <- table(dfMerged$Party, dfMerged[,indexQ])
+    Xsq <- chisq.test(tbl)
+    dfXsq <- rbind(dfXsq, data.frame(surveyQues = vFeaturesSurveyQues[i], pvalue = Xsq$p.value))
+}
+dfXsq <- dfXsq %>% dplyr::filter(pvalue < 0.001) %>% arrange(pvalue)
+vFeaturesSurveyInterest <- as.character(dfXsq$surveyQues)
+lapply(dfRawTrain[vFeaturesSurveyInterest], function(x) table(unlist(x), unlist(dfRawTrain[["Party"]]), useNA = "ifany"))
+
+# Since many respondents have not provided demographic and survey questions, # of valid responses need to be recorded
+dfMerged$NumAnsS <- apply(dfMerged[vFeaturesSurveyQues], 1, function(Z) sum(!is.na(Z)))
+dfMerged$NumAnsP <- apply(dfMerged[vFeaturesSurveyInterest], 1, function(Z) sum(!is.na(Z)))
+
+# See missing map ordered by number of responses to survey questions of interest
+summary(dfMerged$NumAnsP)
+Amelia::missmap(dfMerged[c("USER_ID", "NumAnsP", vFeaturesDemographic, vFeaturesSurveyInterest)] %>%
+                    arrange(desc(NumAnsP)), 
+                main="Missing Map", col=c("yellow","black"), legend=F, 
+                x.cex = 0.6, y.cex = 0.5, y.lab=F, y.at=F, rank.order = F)
+
+# Assign 'dnr' to unanswered survey questions and convert to factors
+dfMerged[vFeaturesSurveyQues] <- lapply(dfMerged[vFeaturesSurveyQues], as.character)
+dfMerged[vFeaturesSurveyQues][is.na(dfMerged[vFeaturesSurveyQues])] <- "dnr"
+dfMerged[vFeaturesSurveyQues] <- lapply(dfMerged[vFeaturesSurveyQues], as.factor)
+dfMerged[vFeaturesSurveyQues] <- lapply(dfMerged[vFeaturesSurveyQues], relevel, "dnr")
+summary(dfMerged[c(1:9)])
+
+# Q113181 & Q98197 (Do you pray or meditate?) ask the same thing
+# Some missing responses in Q113181 could be imputed from Q98197
+dfMerged <- dfMerged %>% 
+            mutate(Q113181 = as.character(Q113181),
+                   Q98197 = as.character(Q98197)) %>% 
+            mutate(Q113181 = ifelse(Q113181 == "dnr", Q98197, Q113181),
+                   Q113181 = as.factor(Q113181),
+                   Q98197 = as.factor(Q98197))
+
+# Assign 'Single (no kids)' to HouseholdStatus NA
+dfMerged <- dfMerged %>% 
+            mutate(HouseholdStatus = as.character(HouseholdStatus),
+                   HouseholdStatus = ifelse(is.na(HouseholdStatus), "Single (no kids)", HouseholdStatus),
+                   HouseholdStatus = as.factor(HouseholdStatus)) %>% 
+            mutate(HouseholdStatus = factor(HouseholdStatus, levels = c("Single (no kids)", 
+                                                                        "Married (no kids)",
+                                                                        "Domestic Partners (no kids)",
+                                                                        "Single (w/kids)", 
+                                                                        "Married (w/kids)",
+                                                                        "Domestic Partners (w/kids)")))
+# Assign 'dnr' to EducationLevel NA
+dfMerged <- dfMerged %>% 
+            mutate(EducationLevel = as.character(EducationLevel),
+                   EducationLevel = ifelse(is.na(EducationLevel), "dnr", EducationLevel),
+                   EducationLevel = as.factor(EducationLevel)) %>% 
+            mutate(EducationLevel = factor(EducationLevel, 
+                                           levels = c("dnr", "Current K-12", "High School Diploma", 
+                                                      "Associate's Degree", "Current Undergraduate", 
+                                                      "Bachelor's Degree", "Master's Degree", "Doctoral Degree")))
+# Assign "dnr" to Income NA
+dfMerged <- dfMerged %>% 
+            mutate(Income = as.character(Income),
+                   Income = ifelse(is.na(Income), "dnr", Income),
+                   Income = as.factor(Income)) %>% 
+            mutate(Income = factor(Income, levels = c("dnr", "under $25,000", "$25,001 - $50,000", "$50,000 - $74,999",
+                                                      "$75,000 - $100,000", "$100,001 - $150,000", "over $150,000")))
+
+# Assign "dnr" to Gender NA
+dfMerged <- dfMerged %>% 
+            mutate(Gender = as.character(Gender),
+                   Gender = ifelse(is.na(Gender), "dnr", Gender),
+                   Gender = as.factor(Gender)) %>% 
+            mutate(Gender = factor(Gender, levels = c("dnr", "Female", "Male")))
+
+# Reduce number of features from final data frame
+dfMerged <- dfMerged[c("USER_ID", "NumAnsP", "NumAnsS", vFeaturesDemographic, vFeaturesSurveyInterest)]
+summary(dfMerged)
+
+# Impute missing YOB values by MICE
+#####################################################################################################################
+# 1. Exclude outlier YOB values before imputing
+dfNonImputed <- dfMerged %>% dplyr::filter(YOB < 1930 | YOB > 2003)
+dfImputed <- subset(dfMerged, !USER_ID %in% dfNonImputed$USER_ID)
+vFeaturesImputed <- vFeaturesDemographic[-1]
+
+# 2. Impute missing demographics
+library(mice)
+set.seed(2300)
+dfImputed[vFeaturesImputed] <- complete(mice(dfImputed[vFeaturesImputed]))
+
+# 3. Recombine non-imputed and imputed sets and relevel factors
+dfMerged <- rbind(dfNonImputed, dfImputed) %>% 
+            arrange(USER_ID)
+
+summary(dfMerged)
+str(dfMerged)
+Amelia::missmap(dfMerged, 
+                main="Missing Map", col=c("yellow","black"), legend=F, 
+                x.cex = 0.6, y.cex = 0.5, y.lab=F, y.at=F, rank.order = F)
+
+# Feature Engineering
+#####################################################################################################################
+
+# Create Age_groups
+dfMerged <- dfMerged %>% 
+            mutate(Age = 2013 - YOB) %>% 
+            mutate(Age_group = cut(Age, 
+                                   breaks = c(min(Age, na.rm = T), 17, 29, 44, 60, max(Age, na.rm = T)),
+                                   labels = c("below 18", "18-29", "30-44", "45-60", "above 60"),
+                                   include.lowest = T))
+
+summary(dfMerged)
+```
+
+
+### Split Data
+
+```{r SplitData}
+# Split original data from merged data after imputation and excluding YOB outliers
+# dfTrain <- subset(dfMerged, !is.na(Party) & (YOB >= 1930 & YOB <= 2003) & (NumAnsP >= quantile(NumAnsP, 0.25)))
+#================================================================================================================
+# Doesn't help to exclude too much data where survey responses are not provided
+# The models have much better accuracy 0.66 (glm) on dfModelTest but do not generalize well on dfTest
+#================================================================================================================
+dfTrain <- subset(dfMerged, !is.na(Party) & (YOB >= 1930 & YOB <= 2003)) %>% 
+            dplyr::select(-USER_ID, -NumAnsS, -YOB, -Q98197)
+dfTest <- subset(dfMerged, is.na(Party))
+```
+
+
+### Base Models
+```{r Base Models}
+# Always Democrat since they have higher proportion in data
+prop.table(table(dfTrain$Party))    # accuracy
+
+```
+
+
+<!-- ### Parameter Tuning by K-fold Cross Validation -->
+
+<!-- ```{r Best Tuning Parameters} -->
+
+<!-- outcome <- "Party" -->
+<!-- # all predictors -->
+<!-- vPredictorsAll <- setdiff(names(dfTrain), outcome) -->
+<!-- # subset predictors -->
+<!-- vPredictorsSubset <- c("Age_group", "Gender", "Income", "HouseholdStatus", "EducationLevel", "NumAnsP", -->
+<!--                        "Q109244","Q115611","Q113181","Q101163","Q98869") -->
+
+<!-- getBestTune <- function(modelMethod, outcome, vPredictors, modelTrain, fitControl) { -->
+<!--     y <- modelTrain[,outcome] -->
+<!--     x <- modelTrain[,vPredictors] -->
+<!--     dmy <- dummyVars(~ ., data = x) -->
+<!--     x <- as.data.frame(predict(dmy, x)) -->
+<!--     LINCOMB <- findLinearCombos(x) -->
+<!--     x <- x[, -LINCOMB$remove] -->
+<!--     NZV <- nearZeroVar(x, saveMetrics = TRUE) -->
+<!--     x <- x[, -which(NZV[1:nrow(NZV),]$nzv == TRUE)] -->
+
+<!--     print(paste("Tuning parameters for", modelMethod)) -->
+
+<!--     if(modelMethod == "gbm") { -->
+<!--         set.seed(2300) -->
+<!--         model_obj <- train(x, y, method = modelMethod, trControl = fitControl, verbose = F) -->
+<!--     } -->
+<!--     else if(modelMethod == "rpart") { -->
+<!--         rpartGrid <- expand.grid(cp = seq(0.001, 0.1, 0.001)) -->
+<!--         model_obj <- train(x, y, method = modelMethod, trControl = fitControl, tuneGrid = rpartGrid) -->
+<!--     } -->
+<!--     else if(modelMethod == "rf") { -->
+<!--         rfGrid <- expand.grid(mtry = c(2, 3, 4)) -->
+<!--         set.seed(2300) -->
+<!--         model_obj <- train(x, y, method = modelMethod, importance = F, nodesize = 5,  -->
+<!--                            trControl = fitControl, tuneGrid = rfGrid) -->
+<!--     } -->
+<!--     else { -->
+<!--         set.seed(2300) -->
+<!--         model_obj <- train(x, y, method = modelMethod, trControl = fitControl) -->
+<!--     } -->
+<!--     return(model_obj) -->
+<!-- } -->
+
+<!-- vModelMethods <- c("glmnet", "gbm", "lda", "rf", "rpart", "svmRadial", "xgbLinear") -->
+
+<!-- # Set number of cores for parallel computation in caret -->
+<!-- library(doParallel) -->
+<!-- registerDoParallel(cores = 4) -->
+
+<!-- # Set trainControl for cross-validation -->
+<!-- numfolds <- 5 -->
+<!-- numrepeats <- 5 -->
+<!-- fitControl <- trainControl(method = "repeatedcv", number = numfolds, repeats = numrepeats, -->
+<!--                            allowParallel = T, classProbs = T) -->
+
+<!-- lBestTune <- list() -->
+<!-- for(i in 1:length(vModelMethods)) { -->
+<!--     modelMethod <- vModelMethods[i] -->
+<!--     lBestTune[[i]] <- getBestTune(modelMethod, outcome, vPredictorsAll, dfTrain, fitControl) -->
+<!-- } -->
+<!-- names(lBestTune) <- vModelMethods -->
+
+<!-- # Check cross-validation accuracy -->
+<!-- cv.perf <- resamples(lBestTune) -->
+<!-- dotplot(cv.perf, metric = "Accuracy") -->
+<!-- summary(cv.perf) -->
+<!-- ``` -->
+
+
+
+<!-- #### Model Probabilities -->
+
+<!-- ```{r Model Probabilities} -->
+<!-- getModelProbabilities <- function(modelMethod, outcome, vPredictors,  -->
+<!--                                   modelTrain, modelTest, dfBestTune = NULL) { -->
+
+<!--     modelFormula <- paste(outcome, paste(vPredictors, collapse = " + "), sep = " ~ ") -->
+<!--     y <- modelTrain[,outcome] -->
+<!--     x <- modelTrain[,vPredictors] -->
+<!--     dmy <- dummyVars(~ ., data = x) -->
+<!--     x <- as.data.frame(predict(dmy, x)) -->
+<!--     LINCOMB <- findLinearCombos(x) -->
+<!--     x <- x[, -LINCOMB$remove] -->
+<!--     NZV <- nearZeroVar(x, saveMetrics = TRUE) -->
+<!--     x <- x[, -which(NZV[1:nrow(NZV),]$nzv == TRUE)] -->
+
+<!--     modelTest <- modelTest[,vPredictors] -->
+<!--     dmy <- dummyVars(~ ., modelTest) -->
+<!--     modelTest <- as.data.frame(predict(dmy, modelTest)) -->
+<!--     modelTest <- modelTest[, -LINCOMB$remove] -->
+<!--     modelTest <- modelTest[, -which(NZV[1:nrow(NZV),]$nzv == TRUE)] -->
+
+<!--     if(modelMethod == "gbm") { -->
+<!--         gbmGrid <- expand.grid(n.trees = dfBestTune$n.trees,  -->
+<!--                                interaction.depth = dfBestTune$interaction.depth, -->
+<!--                                shrinkage = dfBestTune$shrinkage, -->
+<!--                                n.minobsinnode = dfBestTune$n.minobsinnode) -->
+<!--         set.seed(2300) -->
+<!--         model_obj <- train(x, y, method = modelMethod, verbose = F, tuneGrid = gbmGrid) -->
+<!--     }  -->
+<!--     else if(modelMethod == "glm") { -->
+<!--         model_obj <- train(x, y, method = modelMethod) -->
+<!--     } -->
+<!--     else if(modelMethod == "glmnet") { -->
+<!--         glmnetGrid <- expand.grid(alpha = dfBestTune$alpha, lambda = dfBestTune$lambda) -->
+<!--         model_obj <- train(x, y, method = modelMethod, tuneGrid = glmnetGrid) -->
+<!--     } -->
+<!--     else if(modelMethod == "rf") { -->
+<!--         set.seed(2300) -->
+<!--         model_obj <- randomForest(x, y, mtry = dfBestTune$mtry, nodesize = 5) -->
+<!--     } -->
+<!--     else if(modelMethod == "rpart") { -->
+<!--         rpartGrid <- expand.grid(cp = dfBestTune$cp) -->
+<!--         model_obj <- train(x, y, method = modelMethod, tuneGrid = rpartGrid) -->
+<!--     } -->
+<!--     else if(modelMethod == "svmRadial") { -->
+<!--         svmRadialGrid <- expand.grid(sigma = dfBestTune$sigma, C = dfBestTune$C) -->
+<!--         model_obj <- train(x, y, method = modelMethod, tuneGrid = data.frame(sigma = dfBestTune$sigma,C = dfBestTune$C)) -->
+<!--     } -->
+<!--     else if(modelMethod == "xgbLinear") { -->
+<!--         xgbGrid <- expand.grid(nrounds = dfBestTune$nrounds, -->
+<!--                                lambda = dfBestTune$lambda, -->
+<!--                                alpha = dfBestTune$alpha, -->
+<!--                                eta = dfBestTune$eta) -->
+<!--         set.seed(2300) -->
+<!--         model_obj <- train(x, y, method = modelMethod, tuneGrid = xgbGrid) -->
+<!--     } -->
+<!--     else { -->
+<!--         set.seed(2300) -->
+<!--         model_obj <- train(x, y, method = modelMethod) -->
+<!--     } -->
+
+<!--     pred_test <- predict(model_obj, modelTest, type = "prob") -->
+<!--     return(pred_test[,2]) -->
+<!-- } -->
+<!-- ``` -->
+
+
+<!-- #### GLM Model Median Accuracy -->
+
+<!-- ```{r GLM} -->
+
+<!-- vAccuracy <- c() -->
+<!-- for (i in 1:max(numfolds)) { -->
+<!--     modelTrain <- dfTrain[numfolds != i,] -->
+<!--     modelTest <- dfTrain[numfolds == i,] -->
+
+<!--     # train models and make predictions here -->
+<!--     pred_glm <- getModelProbabilities(modelMethod = "glm", outcome, vPredictorsSubset,  -->
+<!--                                       modelTrain, modelTest) -->
+<!--     dfAccuracy <- getModelCharacteristics(modelTest$Party, pred_glm) -->
+<!--     vAccuracy <- c(vAccuracy, as.numeric(dfAccuracy$accuracy)) -->
+<!-- } -->
+<!-- medianAccuracy <- format(median(vAccuracy), digits = 5) -->
+<!-- print(paste("Median glm accuracy =", medianAccuracy)) -->
+<!-- ``` -->
+
+
+<!-- ### Choose Final Model for Kaggle submission -->
+
+<!-- ```{r FinalModel} -->
+
+<!-- vModelMethods <- c("gbm", "glmnet", "rpart", "rf", "xgbLinear") -->
+<!-- lModelProb <- list() -->
+<!-- for(i in 1:length(vModelMethods)) { -->
+<!--     modelMethod <- vModelMethods[i] -->
+<!--     print(paste("Getting test set probabilities for", modelMethod)) -->
+<!--     lModelProb[[i]] <- getModelProbabilities(modelMethod, outcome, vPredictorsAll,  -->
+<!--                                              dfTrain, dfTest, lBestTune[[modelMethod]]$bestTune) -->
+<!-- } -->
+<!-- names(lModelProb) <- vModelMethods -->
+<!-- dfFinalProb <- as.data.frame(lModelProb) -->
+
+<!-- dfFinalProb$MeanModel <- apply(dfFinalProb, 1, function(Z) mean(as.numeric(Z[1:length(vModelMethods)]), na.rm = T)) -->
+<!-- dfFinalProb$MedianModel <- apply(dfFinalProb, 1, function(Z) median(as.numeric(Z[1:length(vModelMethods)]), na.rm = T)) -->
+
+<!-- finalModel <- "MeanModel" -->
+<!-- PredTest <- dfFinalProb[finalModel] -->
+
+<!-- threshold = 0.5 -->
+<!-- vPredTestLabels = as.factor(ifelse(PredTest<threshold, "Democrat", "Republican")) -->
+
+<!-- dfSubmit = data.frame(USER_ID = dfTest$USER_ID, PREDICTIONS = vPredTestLabels) -->
+<!-- write.csv(dfSubmit, paste0("submission_", finalModel, ".csv"), quote = F, row.names=FALSE) -->
+<!-- ``` -->
+
